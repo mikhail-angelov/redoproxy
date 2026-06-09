@@ -1,0 +1,33 @@
+services:
+  redoproxy:
+    build: .
+    ports:
+      - "8080:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - certs:/data/autocert
+    environment:
+      PORT: "8080"
+      DISCOVERY_INTERVAL: "10s"
+      DOCKER_NETWORK: "proxy-net"
+      TLS_ENABLED: false
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    networks:
+      - proxy-net
+
+  app:
+    image: nginx:alpine
+    labels:
+      redoproxy.enabled: "true"
+      redoproxy.domain: "example.local"
+      redoproxy.port: "80"
+    networks:
+      - proxy-net
+
+networks:
+  proxy-net:
+    external: true
