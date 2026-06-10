@@ -35,11 +35,11 @@ func TestNewSSLDefaultsHTTPAddr(t *testing.T) {
 		t.Fatal("expected ssl not to be nil")
 	}
 
-	if ssl.Manager == nil {
+	if ssl.manager == nil {
 		t.Fatal("expected manager not to be nil")
 	}
 
-	if ssl.Matcher == nil {
+	if ssl.matcher == nil {
 		t.Fatal("expected matcher not to be nil")
 	}
 
@@ -47,8 +47,8 @@ func TestNewSSLDefaultsHTTPAddr(t *testing.T) {
 		t.Fatalf("expected default HTTPAddr :80, got %q", ssl.HTTPAddr)
 	}
 
-	if ssl.Manager.Email != "dev@example.com" {
-		t.Fatalf("expected email dev@example.com, got %q", ssl.Manager.Email)
+	if ssl.manager.Email != "dev@example.com" {
+		t.Fatalf("expected email dev@example.com, got %q", ssl.manager.Email)
 	}
 }
 
@@ -65,12 +65,12 @@ func TestNewSSLUsesCustomHTTPAddrAndDirectoryURL(t *testing.T) {
 		t.Fatalf("expected HTTPAddr :8080, got %q", ssl.HTTPAddr)
 	}
 
-	if ssl.Manager.Client == nil {
+	if ssl.manager.Client == nil {
 		t.Fatal("expected ACME client to be set")
 	}
 
-	if ssl.Manager.Client.DirectoryURL != directoryURL {
-		t.Fatalf("expected directory URL %q, got %q", directoryURL, ssl.Manager.Client.DirectoryURL)
+	if ssl.manager.Client.DirectoryURL != directoryURL {
+		t.Fatalf("expected directory URL %q, got %q", directoryURL, ssl.manager.Client.DirectoryURL)
 	}
 }
 
@@ -85,7 +85,7 @@ func TestSSLHostPolicyAllowsMatchedHost(t *testing.T) {
 
 	ssl := NewSSL(matcher, "dev@example.com", t.TempDir(), ":8080", "")
 
-	err := ssl.Manager.HostPolicy(context.Background(), "example.com")
+	err := ssl.manager.HostPolicy(context.Background(), "example.com")
 	if err != nil {
 		t.Fatalf("expected host to be allowed, got error: %v", err)
 	}
@@ -102,7 +102,7 @@ func TestSSLHostPolicyRejectsUnknownHost(t *testing.T) {
 
 	ssl := NewSSL(matcher, "dev@example.com", t.TempDir(), ":8080", "")
 
-	err := ssl.Manager.HostPolicy(context.Background(), "unknown.example.com")
+	err := ssl.manager.HostPolicy(context.Background(), "unknown.example.com")
 	if err == nil {
 		t.Fatal("expected host policy error")
 	}
@@ -174,5 +174,35 @@ func TestSSLHandlerRedirectsHTTPToHTTPS(t *testing.T) {
 
 	if got := res.Header.Get("Location"); got != "https://example.com/some/path?x=1" {
 		t.Fatalf("expected redirect location https://example.com/some/path?x=1, got %q", got)
+	}
+}
+
+func TestSSLUsesLoggingCache(t *testing.T) {
+	matcher := &sslTestMatcher{result: true}
+
+	ssl := NewSSL(matcher, "dev@example.com", t.TempDir(), ":8080", "")
+
+	if ssl.manager.Cache == nil {
+		t.Fatal("expected cache to be set")
+	}
+
+	if _, ok := ssl.manager.Cache.(loggingAutocertCache); !ok {
+		t.Fatalf("expected loggingAutocertCache, got %T", ssl.manager.Cache)
+	}
+}
+
+func TestSSLTLSConfigWrapsGetCertificate(t *testing.T) {
+	matcher := &sslTestMatcher{result: true}
+
+	ssl := NewSSL(matcher, "dev@example.com", t.TempDir(), ":8080", "")
+
+	cfg := ssl.TLSConfig()
+
+	if cfg == nil {
+		t.Fatal("expected TLS config")
+	}
+
+	if cfg.GetCertificate == nil {
+		t.Fatal("expected GetCertificate to be set")
 	}
 }

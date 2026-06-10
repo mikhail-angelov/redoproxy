@@ -73,7 +73,7 @@ func main() {
 	ssl.RunHTTPChallengeServer(ctx)
 
 	httpsProxy := proxy.NewHttpProxy(":"+httpsPort, discovery)
-	httpsProxy.Server.TLSConfig = ssl.Manager.TLSConfig()
+	httpsProxy.Server.TLSConfig = ssl.TLSConfig()
 
 	if err := httpsProxy.RunTLS(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		slog.Error("cannot start https proxy server", "err", err)
