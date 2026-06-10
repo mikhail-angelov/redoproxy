@@ -1,12 +1,13 @@
 services:
   redoproxy:
     image: ghcr.io/mikhail-angelov/redoproxy:latest
+    restart: unless-stopped
     ports:
       - "80:80"
       - "443:443"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
-      - certs:/data/autocert
+      - ./certs:/data/autocert
     environment:
       DISCOVERY_INTERVAL: "60s"
       TLS_ENABLED: "true"
@@ -15,20 +16,6 @@ services:
       ACME_STAGING: "false"
       ACME_EMAIL: "mikhail.angelov@gmail.com"
       ACME_CACHE_DIR: "/data/autocert"
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/health"]
-      interval: 60s
-      timeout: 3s
-      retries: 3
-    networks:
-      - proxy-net
-
-  app:
-    image: nginx:alpine
-    labels:
-      redoproxy.enabled: "true"
-      redoproxy.domain: "example.local"
-      redoproxy.port: "80"
     networks:
       - proxy-net
 

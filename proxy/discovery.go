@@ -93,8 +93,8 @@ func (d *Discovery) CheckAndBootstrapDockerClient() error {
 	defer cancel()
 
 	if d.networkName != "" {
-		if _, err := d.getContainers(ctx); err != nil {
-			return fmt.Errorf("failed to list containers: %w", err)
+		if err := d.refresh(ctx); err != nil {
+			return fmt.Errorf("failed to init containers: %w", err)
 		}
 
 		slog.Info(

@@ -19,6 +19,4 @@ RUN apk add --no-cache ca-certificates tzdata wget
 
 COPY --from=builder /out/redoproxy /usr/local/bin/redoproxy
 
-EXPOSE 8080
-
 ENTRYPOINT ["redoproxy"]

@@ -6,7 +6,7 @@ services:
       - "443:443"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
-      - certs-st:/data/autocert
+      - ./certs-st:/data/autocert
     environment:
       DISCOVERY_INTERVAL: "60s"
       TLS_ENABLED: "true"
@@ -16,7 +16,7 @@ services:
       ACME_EMAIL: "mikhail.angelov@gmail.com"
       ACME_CACHE_DIR: "/data/autocert"
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/health"]
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:80/health"]
       interval: 10s
       timeout: 3s
       retries: 3

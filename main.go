@@ -20,7 +20,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	tlsEnabled := getenv("TLS_ENABLED", "true") == "true"
+	tlsEnabled := getenv("TLS_ENABLED", "false") == "true"
 	port := getenv("PORT", "8080")
 	networkName := strings.TrimSpace(getenv("DOCKER_NETWORK", ""))
 	interval, err := time.ParseDuration(getenv("DISCOVERY_INTERVAL", "60s"))
@@ -50,7 +50,7 @@ func main() {
 		os.Exit(1)
 	}
 	go func() {
-		if err := discovery.Run(ctx); err != nil {
+		if err := discovery.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 			slog.Error("discovery stopped", "err", err)
 		}
 	}()
