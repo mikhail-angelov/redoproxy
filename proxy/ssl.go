@@ -19,7 +19,7 @@ import (
 type SSL struct {
 	manager  *autocert.Manager
 	matcher  RouteMatcher
-	HTTPAddr string
+	httpAddr string
 
 	certMu     sync.Mutex
 	certLogged map[string]bool
@@ -65,9 +65,10 @@ func NewSSL(matcher RouteMatcher, email string, path string, httpAddr string, di
 		"production", directoryURL == "",
 	)
 	return &SSL{
-		manager:  manager,
-		matcher:  matcher,
-		HTTPAddr: httpAddr,
+		manager:    manager,
+		matcher:    matcher,
+		httpAddr:   httpAddr,
+		certLogged: make(map[string]bool),
 	}
 }
 
@@ -191,7 +192,7 @@ func (s *SSL) Handler() http.Handler {
 
 func (s *SSL) RunHTTPChallengeServer(ctx context.Context) {
 	httpServer := &http.Server{
-		Addr:              s.HTTPAddr,
+		Addr:              s.httpAddr,
 		Handler:           s.Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 	}

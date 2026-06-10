@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"crypto/tls"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -43,8 +44,8 @@ func TestNewSSLDefaultsHTTPAddr(t *testing.T) {
 		t.Fatal("expected matcher not to be nil")
 	}
 
-	if ssl.HTTPAddr != ":80" {
-		t.Fatalf("expected default HTTPAddr :80, got %q", ssl.HTTPAddr)
+	if ssl.httpAddr != ":80" {
+		t.Fatalf("expected default httpAddr :80, got %q", ssl.httpAddr)
 	}
 
 	if ssl.manager.Email != "dev@example.com" {
@@ -61,8 +62,8 @@ func TestNewSSLUsesCustomHTTPAddrAndDirectoryURL(t *testing.T) {
 
 	ssl := NewSSL(matcher, "dev@example.com", t.TempDir(), ":8080", directoryURL)
 
-	if ssl.HTTPAddr != ":8080" {
-		t.Fatalf("expected HTTPAddr :8080, got %q", ssl.HTTPAddr)
+	if ssl.httpAddr != ":8080" {
+		t.Fatalf("expected httpAddr :8080, got %q", ssl.httpAddr)
 	}
 
 	if ssl.manager.Client == nil {
@@ -205,4 +206,15 @@ func TestSSLTLSConfigWrapsGetCertificate(t *testing.T) {
 	if cfg.GetCertificate == nil {
 		t.Fatal("expected GetCertificate to be set")
 	}
+}
+
+func TestSSLLogCertificateReadyDoesNotPanic(t *testing.T) {
+	matcher := &sslTestMatcher{result: true}
+
+	ssl := NewSSL(matcher, "dev@example.com", t.TempDir(), ":8080", "")
+
+	cert := &tls.Certificate{}
+
+	ssl.logCertificateReady("example.com", cert)
+	ssl.logCertificateReady("example.com", cert)
 }
