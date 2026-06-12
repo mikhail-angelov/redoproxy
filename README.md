@@ -190,7 +190,7 @@ environment:
 - **HTTP ACME challenge server** — serves HTTP-01 challenges alongside a 301 redirect to HTTPS
 - **Health check endpoint** — `/health` returns `200 OK` on the HTTP server (before TLS)
 - **Access logging** — structured logs via `log/slog` with method, host, path, status, duration, bytes, remote address, and user agent
-- **Forwarded headers** — sets `X-Real-Ip`, `X-Forwarded-For`, `X-Forwarded-Host`, `X-Forwarded-Proto`
+- **Forwarded headers** — sets `X-Real-Ip`, `X-Forwarded-For`, `X-Forwarded-Host`, `X-Forwarded-Proto`, `X-Request-Id`
 - **Auto-network detection** — when `DOCKER_NETWORK` is not set, detects its own network from the Docker API
 - **Minimal dependencies** — only depends on `golang.org/x/crypto` (autocert)
 

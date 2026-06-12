@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"crypto/rand"
 	"fmt"
 	"log/slog"
 	"net"
@@ -129,6 +130,10 @@ func (p *HTTPProxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 			if ip, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
 				preq.Out.Header.Set("X-Real-Ip", ip)
 			}
+			requestId := preq.In.Header.Get("X-Request-Id")
+			if requestId == "" {
+				preq.Out.Header.Set("X-Request-Id", generateRequestId())
+			}
 
 			preq.SetXForwarded()
 		},
@@ -144,4 +149,12 @@ func (p *HTTPProxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	rp.ServeHTTP(w, r)
+}
+
+func generateRequestId() string {
+	b := make([]byte, 16)
+	rand.Read(b)
+	// Format as UUID v4
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
+		b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }

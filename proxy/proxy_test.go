@@ -55,6 +55,11 @@ func TestReverseProxy(t *testing.T) {
 			return
 		}
 
+		if got := r.Header.Get("X-Request-Id"); got == "" {
+			errCh <- "expected X-Request-Id to be set"
+			return
+		}
+
 		w.Header().Set("X-Backend", "test-backend")
 		w.WriteHeader(http.StatusOK)
 

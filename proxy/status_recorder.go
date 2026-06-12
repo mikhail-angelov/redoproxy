@@ -70,5 +70,6 @@ func logAccess(r *http.Request, status int, bytes int, duration time.Duration) {
 		"duration_ms", duration.Milliseconds(),
 		"remote_addr", r.RemoteAddr,
 		"user_agent", r.UserAgent(),
+		"request_id", r.Header.Get("X-Request-Id"),
 	)
 }
