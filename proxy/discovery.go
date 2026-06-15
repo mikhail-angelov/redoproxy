@@ -24,9 +24,9 @@ type Discovery struct {
 }
 
 type ContainerRoute struct {
-	Domain         string
-	Server         string
-	MaxBodySize    int64
+	Domain                  string
+	Server                  string
+	MaxBodySize             int64
 	ConcurrentRequestsLimit int
 }
 
@@ -338,9 +338,9 @@ func buildRouteMap(containers []dockerContainer) map[string]ContainerRoute {
 		}
 
 		routes[domain] = ContainerRoute{
-			Domain:         domain,
-			Server:         "http://" + net.JoinHostPort(c.IP, strconv.Itoa(c.Port)),
-			MaxBodySize:    int64(maxBodySize),
+			Domain:                  domain,
+			Server:                  "http://" + net.JoinHostPort(c.IP, strconv.Itoa(c.Port)),
+			MaxBodySize:             int64(maxBodySize),
 			ConcurrentRequestsLimit: concurrentRequestsLimit,
 		}
 	}
