@@ -2,7 +2,7 @@ package proxy
 
 import (
 	"context"
-	"crypto/rand"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -10,6 +10,8 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"time"
+
+	"github.com/mikhail-angelov/redoproxy/proxy/middleware"
 )
 
 type RouteMatcher interface {
@@ -19,12 +21,24 @@ type RouteMatcher interface {
 type HTTPProxy struct {
 	Matcher RouteMatcher
 	Server  *http.Server
+
+	handler http.Handler
 }
 
 func NewHttpProxy(addr string, matcher RouteMatcher) *HTTPProxy {
 	p := &HTTPProxy{
 		Matcher: matcher,
 	}
+
+	var handler http.Handler = http.HandlerFunc(p.handleHTTP)
+	handler = middleware.BodySizeLimitMiddleware(handler, p.getMaxRequestBodySize)
+	handler = middleware.ConcurrentRequestsLimitMiddleware(handler, p.getConcurrentRequestsLimit)
+	handler = middleware.LoggingMiddleware(handler)
+	handler = middleware.HealthMiddleware(handler)
+	handler = middleware.RequestIDMiddleware(handler)
+
+	p.handler = handler
+
 	p.Server = &http.Server{
 		Addr:              addr,
 		Handler:           p,
@@ -92,22 +106,10 @@ func (p *HTTPProxy) RunTLS(ctx context.Context) error {
 }
 
 func (p *HTTPProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	start := time.Now()
-
-	rec := newStatusRecorder(w)
-	p.handleHTTP(rec, r)
-
-	if r.URL.Path != "/health" {
-		logAccess(r, rec.status, rec.bytes, time.Since(start))
-	}
+	p.handler.ServeHTTP(w, r)
 }
 
 func (p *HTTPProxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path == "/health" {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ok"))
-		return
-	}
 
 	route, ok := p.Matcher.Lookup(r.Host)
 	if !ok {
@@ -117,7 +119,7 @@ func (p *HTTPProxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 
 	target, err := url.Parse(route.Server)
 	if err != nil || target.Scheme == "" || target.Host == "" {
-		slog.Error("invalid route target", "host", r.Host, "target", route.Server, "err", err)
+		slog.Error("invalid route target", "request_id", middleware.RequestIDFromContext(r.Context()), "host", r.Host, "target", route.Server, "err", err)
 		http.Error(w, "invalid route target", http.StatusBadGateway)
 		return
 	}
@@ -127,19 +129,34 @@ func (p *HTTPProxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 			preq.SetURL(target)
 			preq.Out.Host = preq.In.Host
 
-			if ip, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+			if ip, _, err := net.SplitHostPort(preq.In.RemoteAddr); err == nil {
 				preq.Out.Header.Set("X-Real-Ip", ip)
 			}
-			requestId := preq.In.Header.Get("X-Request-Id")
-			if requestId == "" {
-				preq.Out.Header.Set("X-Request-Id", generateRequestId())
+			requestID := middleware.RequestIDFromContext(preq.In.Context())
+			if requestID != "" {
+				preq.Out.Header.Set(middleware.RequestIDHeader, requestID)
 			}
 
 			preq.SetXForwarded()
 		},
 		ErrorHandler: func(w http.ResponseWriter, req *http.Request, err error) {
+			var maxBytesErr *http.MaxBytesError
+			if errors.As(err, &maxBytesErr) {
+				slog.Warn(
+					"request body is too large",
+					"request_id", middleware.RequestIDFromContext(req.Context()),
+					"host", req.Host,
+					"target", route.Server,
+					"limit", maxBytesErr.Limit,
+					"err", err,
+				)
+				http.Error(w, "request body is too large", http.StatusRequestEntityTooLarge)
+				return
+			}
+
 			slog.Error(
 				"upstream request failed",
+				"request_id", middleware.RequestIDFromContext(req.Context()),
 				"host", r.Host,
 				"target", route.Server,
 				"err", err,
@@ -151,10 +168,19 @@ func (p *HTTPProxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	rp.ServeHTTP(w, r)
 }
 
-func generateRequestId() string {
-	b := make([]byte, 16)
-	rand.Read(b)
-	// Format as UUID v4
-	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
-		b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+func (p *HTTPProxy) getMaxRequestBodySize(host string) (int64, error) {
+
+	route, ok := p.Matcher.Lookup(host)
+	if !ok {
+		return 0, fmt.Errorf("invalid host: %s", host)
+	}
+	return route.MaxBodySize, nil
+}
+func (p *HTTPProxy) getConcurrentRequestsLimit(host string) (int, error) {
+
+	route, ok := p.Matcher.Lookup(host)
+	if !ok {
+		return 0, fmt.Errorf("invalid host: %s", host)
+	}
+	return route.ConcurrentRequestsLimit, nil
 }

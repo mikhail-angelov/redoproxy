@@ -5,18 +5,25 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
+
+	"github.com/mikhail-angelov/redoproxy/proxy/middleware"
+	"github.com/stretchr/testify/assert"
 )
 
 type TestMatcher struct {
 	Route  ContainerRoute
 	Result bool
 	Host   string
+
+	calls atomic.Int32
 }
 
 func (tm *TestMatcher) Lookup(host string) (ContainerRoute, bool) {
 	tm.Host = host
+	tm.calls.Add(1)
 	return tm.Route, tm.Result
 }
 
@@ -68,8 +75,10 @@ func TestReverseProxy(t *testing.T) {
 	defer backend.Close()
 	tm := TestMatcher{
 		Route: ContainerRoute{
-			Server: backend.URL,
-			Domain: "example.com",
+			Server:                  backend.URL,
+			Domain:                  "example.com",
+			MaxBodySize:             1,
+			ConcurrentRequestsLimit: 1,
 		},
 		Result: true,
 	}
@@ -91,31 +100,17 @@ func TestReverseProxy(t *testing.T) {
 	default:
 	}
 
-	if !backendCalled.Load() {
-		t.Fatal("expected backend to be called")
-	}
-
-	if tm.Host != "example.com" {
-		t.Fatalf("expected matcher host example.com, got %q", tm.Host)
-	}
-
-	if res.StatusCode != http.StatusOK {
-		t.Fatalf("expected status 200, got %d", res.StatusCode)
-	}
-
-	if got := res.Header.Get("X-Backend"); got != "test-backend" {
-		t.Fatalf("expected X-Backend header test-backend, got %q", got)
-	}
-
+	assert.True(t, backendCalled.Load())
+	assert.True(t, tm.calls.Load() >= 1)
+	assert.Equal(t, "example.com", tm.Host)
+	assert.Equal(t, http.StatusOK, res.StatusCode)
+	header := res.Header.Get("X-Backend")
+	assert.Contains(t, "test-backend", header)
 	body, err := io.ReadAll(res.Body)
-	if err != nil {
-		t.Fatalf("failed to read response body: %v", err)
-	}
 
-	if string(body) != "backend response" {
-		t.Fatalf("expected backend response body, got %q", string(body))
-	}
+	assert.Equal(t, err, nil)
 
+	assert.Contains(t, "backend response", string(body))
 }
 func TestReverseProxyInvalidDomain(t *testing.T) {
 	var backendCalled atomic.Bool
@@ -142,17 +137,9 @@ func TestReverseProxyInvalidDomain(t *testing.T) {
 		_ = res.Body.Close()
 	}()
 
-	if backendCalled.Load() {
-		t.Fatal("expected backend not to be called")
-	}
-
-	if tm.Host != "invalid.com" {
-		t.Fatalf("expected matcher host invalid.com, got %q", tm.Host)
-	}
-
-	if res.StatusCode != http.StatusNotFound {
-		t.Fatalf("expected status 404, got %d", res.StatusCode)
-	}
+	assert.False(t, backendCalled.Load())
+	assert.Equal(t, "invalid.com", tm.Host)
+	assert.Equal(t, http.StatusNotFound, res.StatusCode)
 }
 func TestReverseProxyInvalidUrl(t *testing.T) {
 	tm := TestMatcher{
@@ -173,26 +160,19 @@ func TestReverseProxyInvalidUrl(t *testing.T) {
 	defer func() {
 		_ = res.Body.Close()
 	}()
-	if tm.Host != "example.com" {
-		t.Fatalf("expected matcher host example.com, got %q", tm.Host)
-	}
 
-	if res.StatusCode != http.StatusBadGateway {
-		t.Fatalf("expected status 502, got %d", res.StatusCode)
-	}
+	assert.Equal(t, "example.com", tm.Host)
+	assert.Equal(t, http.StatusBadGateway, res.StatusCode)
 }
 
 func TestReverseProxyUpstreamConnectionRefused(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("failed to create listener: %v", err)
-	}
+	assert.Equal(t, err, nil)
 
 	addr := ln.Addr().String()
 
-	if err := ln.Close(); err != nil {
-		t.Fatalf("failed to close listener: %v", err)
-	}
+	err = ln.Close()
+	assert.Equal(t, err, nil)
 
 	tm := TestMatcher{
 		Route: ContainerRoute{
@@ -214,14 +194,36 @@ func TestReverseProxyUpstreamConnectionRefused(t *testing.T) {
 	defer func() {
 		_ = res.Body.Close()
 	}()
+	assert.Equal(t, err, nil)
+	assert.Equal(t, "example.com", tm.Host)
+	assert.Equal(t, http.StatusBadGateway, res.StatusCode)
+}
 
-	if tm.Host != "example.com" {
-		t.Fatalf("expected matcher host example.com, got %q", tm.Host)
+func TestReverseProxyPreservesRequestID(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "test-request-id", r.Header.Get(middleware.RequestIDHeader))
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	tm := TestMatcher{
+		Route: ContainerRoute{
+			Server: backend.URL,
+			Domain: "example.com",
+		},
+		Result: true,
 	}
 
-	if res.StatusCode != http.StatusBadGateway {
-		t.Fatalf("expected status 502, got %d", res.StatusCode)
-	}
+	proxy := NewHttpProxy(":0", &tm)
+
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/test", nil)
+	req.Header.Set(middleware.RequestIDHeader, "test-request-id")
+
+	rr := httptest.NewRecorder()
+	proxy.ServeHTTP(rr, req)
+
+	assert.Equal(t, http.StatusOK, rr.Code)
+	assert.Equal(t, "test-request-id", rr.Header().Get(middleware.RequestIDHeader))
 }
 
 func TestReverseProxyHealth(t *testing.T) {
@@ -245,15 +247,65 @@ func TestReverseProxyHealth(t *testing.T) {
 	}()
 
 	body, err := io.ReadAll(res.Body)
-	if err != nil {
-		t.Fatalf("failed to read body: %v", err)
+
+	assert.Equal(t, err, nil)
+	assert.Equal(t, "ok", string(body))
+	assert.Equal(t, int32(0), tm.calls.Load())
+	assert.Equal(t, http.StatusOK, res.StatusCode)
+}
+
+func TestReverseProxyRejectsTooLargeRequestBody(t *testing.T) {
+	var backendCalled atomic.Bool
+
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		backendCalled.Store(true)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	tm := TestMatcher{
+		Route: ContainerRoute{
+			Server:      backend.URL,
+			Domain:      "example.com",
+			MaxBodySize: 1,
+		},
+		Result: true,
+	}
+	proxy := NewHttpProxy(":0", &tm)
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/upload", strings.NewReader("test me"))
+	rr := httptest.NewRecorder()
+
+	proxy.ServeHTTP(rr, req)
+	res := rr.Result()
+	defer func() {
+		_ = res.Body.Close()
+	}()
+	assert.False(t, backendCalled.Load())
+	assert.Equal(t, http.StatusRequestEntityTooLarge, res.StatusCode)
+}
+func TestReverseProxyRejectsStreamingBodyOverLimit(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	tm := TestMatcher{
+		Route: ContainerRoute{
+			Server:      backend.URL,
+			Domain:      "example.com",
+			MaxBodySize: 1,
+		},
+		Result: true,
 	}
 
-	if string(body) != "ok" {
-		t.Fatalf("expected body ok, got %q", string(body))
-	}
+	proxy := NewHttpProxy(":0", &tm)
 
-	if res.StatusCode != http.StatusOK {
-		t.Fatalf("expected status 200, got %d", res.StatusCode)
-	}
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/upload", strings.NewReader("test me"))
+	req.ContentLength = -1
+
+	rr := httptest.NewRecorder()
+	proxy.ServeHTTP(rr, req)
+
+	assert.Equal(t, http.StatusRequestEntityTooLarge, rr.Code)
 }

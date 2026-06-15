@@ -24,8 +24,10 @@ type Discovery struct {
 }
 
 type ContainerRoute struct {
-	Domain string
-	Server string
+	Domain         string
+	Server         string
+	MaxBodySize    int64
+	ConcurrentRequestsLimit int
 }
 
 type dockerContainer struct {
@@ -306,6 +308,26 @@ func buildRouteMap(containers []dockerContainer) map[string]ContainerRoute {
 			continue
 		}
 
+		maxBodySize := 0
+		if c.Labels["redoproxy.max_body_size"] != "" {
+			value, err := strconv.Atoi(c.Labels["redoproxy.max_body_size"])
+			if err != nil || value < 0 {
+				slog.Warn("invalid max_body_size label", "value", c.Labels["redoproxy.max_body_size"])
+			} else {
+				maxBodySize = value
+			}
+		}
+
+		concurrentRequestsLimit := 0
+		if c.Labels["redoproxy.max_connections"] != "" {
+			value, err := strconv.Atoi(c.Labels["redoproxy.max_connections"])
+			if err != nil || value < 0 {
+				slog.Warn("invalid max_connections label", "value", c.Labels["redoproxy.max_connections"])
+			} else {
+				concurrentRequestsLimit = value
+			}
+		}
+
 		if existing, ok := routes[domain]; ok {
 			slog.Warn(
 				"duplicate redoproxy domain, overriding route",
@@ -316,8 +338,10 @@ func buildRouteMap(containers []dockerContainer) map[string]ContainerRoute {
 		}
 
 		routes[domain] = ContainerRoute{
-			Domain: domain,
-			Server: "http://" + net.JoinHostPort(c.IP, strconv.Itoa(c.Port)),
+			Domain:         domain,
+			Server:         "http://" + net.JoinHostPort(c.IP, strconv.Itoa(c.Port)),
+			MaxBodySize:    int64(maxBodySize),
+			ConcurrentRequestsLimit: concurrentRequestsLimit,
 		}
 	}
 

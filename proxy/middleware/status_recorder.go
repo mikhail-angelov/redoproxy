@@ -1,12 +1,10 @@
-package proxy
+package middleware
 
 import (
 	"bufio"
 	"errors"
-	"log/slog"
 	"net"
 	"net/http"
-	"time"
 )
 
 type StatusRecorder struct {
@@ -56,20 +54,4 @@ func (r *StatusRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 		return nil, nil, errors.New("underlying response writer does not support hijacking")
 	}
 	return h.Hijack()
-}
-
-func logAccess(r *http.Request, status int, bytes int, duration time.Duration) {
-	slog.Info(
-		"access",
-		"method", r.Method,
-		"host", r.Host,
-		"path", r.URL.Path,
-		"query", r.URL.RawQuery,
-		"status", status,
-		"bytes", bytes,
-		"duration_ms", duration.Milliseconds(),
-		"remote_addr", r.RemoteAddr,
-		"user_agent", r.UserAgent(),
-		"request_id", r.Header.Get("X-Request-Id"),
-	)
 }
