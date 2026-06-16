@@ -31,9 +31,7 @@ func TestBodySizeLimitMiddlewarePassesWhenWithLimit(t *testing.T) {
 		_, err := io.ReadAll(r.Body)
 
 		var maxBytesErr *http.MaxBytesError
-		if !errors.As(err, &maxBytesErr) {
-			t.Fatalf("expected MaxBytesError, got %v", err)
-		}
+		assert.True(t, errors.As(err, &maxBytesErr))
 
 		http.Error(w, "request body is too large", http.StatusRequestEntityTooLarge)
 	})

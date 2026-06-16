@@ -14,7 +14,7 @@ app should have config for routing and some params for reverse proxy
     - `redoproxy.enabled` : `true`
     - `redoproxy.domain` : `example.com`
     - `redoproxy.port` : `3000`
-    - `redoproxy.max_connections` : `100` (optional)
+    - `redoproxy.concurrent_requests_limit` : `100` (optional)
     - `redoproxy.max_body_size` : `10000000` (optional)
 - container should be in same network as redoproxy
 - !!! currently redoproxy support only one network, do not assign several networks to this container

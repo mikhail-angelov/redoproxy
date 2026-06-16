@@ -37,12 +37,16 @@ func NewSSL(matcher RouteMatcher, email string, path string, httpAddr string, di
 		Email:  email,
 		Cache:  cache,
 		HostPolicy: func(ctx context.Context, host string) error {
-			route, ok := matcher.Lookup(host)
+			group, ok := matcher.LookupGroup(host)
 			if ok {
+				targets := make([]string, len(group.Upstreams))
+				for i, u := range group.Upstreams {
+					targets[i] = u.Server
+				}
 				slog.Info(
 					"acme host allowed",
 					"host", host,
-					"target", route.Server,
+					"targets", targets,
 				)
 				return nil
 			}
@@ -77,7 +81,7 @@ func (s *SSL) TLSConfig() *tls.Config {
 
 	getCertificate := cfg.GetCertificate
 	cfg.GetCertificate = func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
-		serverName := strings.ToLower(strings.TrimSpace(hello.ServerName))
+		serverName := normalizeLookupHost(hello.ServerName)
 
 		slog.Info(
 			"acme certificate requested",

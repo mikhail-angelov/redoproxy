@@ -14,17 +14,17 @@ import (
 )
 
 type TestMatcher struct {
-	Route  ContainerRoute
-	Result bool
-	Host   string
+	RouteGroup *RouteGroup
+	Result     bool
+	Host       string
 
 	calls atomic.Int32
 }
 
-func (tm *TestMatcher) Lookup(host string) (ContainerRoute, bool) {
+func (tm *TestMatcher) LookupGroup(host string) (*RouteGroup, bool) {
 	tm.Host = host
 	tm.calls.Add(1)
-	return tm.Route, tm.Result
+	return tm.RouteGroup, tm.Result
 }
 
 func TestReverseProxy(t *testing.T) {
@@ -74,9 +74,11 @@ func TestReverseProxy(t *testing.T) {
 	}))
 	defer backend.Close()
 	tm := TestMatcher{
-		Route: ContainerRoute{
-			Server:                  backend.URL,
-			Domain:                  "example.com",
+		RouteGroup: &RouteGroup{
+			Domain: "example.com",
+			Upstreams: []Upstream{{
+				Server: backend.URL,
+			}},
 			MaxBodySize:             1,
 			ConcurrentRequestsLimit: 1,
 		},
@@ -96,7 +98,7 @@ func TestReverseProxy(t *testing.T) {
 
 	select {
 	case msg := <-errCh:
-		t.Fatal(msg)
+		assert.Fail(t, msg)
 	default:
 	}
 
@@ -104,13 +106,11 @@ func TestReverseProxy(t *testing.T) {
 	assert.True(t, tm.calls.Load() >= 1)
 	assert.Equal(t, "example.com", tm.Host)
 	assert.Equal(t, http.StatusOK, res.StatusCode)
-	header := res.Header.Get("X-Backend")
-	assert.Contains(t, "test-backend", header)
+	assert.Equal(t, "test-backend", res.Header.Get("X-Backend"))
 	body, err := io.ReadAll(res.Body)
 
-	assert.Equal(t, err, nil)
-
-	assert.Contains(t, "backend response", string(body))
+	assert.NoError(t, err)
+	assert.Equal(t, "backend response", string(body))
 }
 func TestReverseProxyInvalidDomain(t *testing.T) {
 	var backendCalled atomic.Bool
@@ -119,9 +119,11 @@ func TestReverseProxyInvalidDomain(t *testing.T) {
 	}))
 	defer backend.Close()
 	tm := TestMatcher{
-		Route: ContainerRoute{
-			Server: backend.URL,
+		RouteGroup: &RouteGroup{
 			Domain: "example.com",
+			Upstreams: []Upstream{{
+				Server: backend.URL,
+			}},
 		},
 		Result: false,
 	}
@@ -143,9 +145,13 @@ func TestReverseProxyInvalidDomain(t *testing.T) {
 }
 func TestReverseProxyInvalidUrl(t *testing.T) {
 	tm := TestMatcher{
-		Route: ContainerRoute{
-			Server: "http://%",
+		RouteGroup: &RouteGroup{
 			Domain: "example.com",
+			Upstreams: []Upstream{{
+				Server: "http://%",
+			}},
+			MaxBodySize:             1,
+			ConcurrentRequestsLimit: 1,
 		},
 		Result: true,
 	}
@@ -167,17 +173,21 @@ func TestReverseProxyInvalidUrl(t *testing.T) {
 
 func TestReverseProxyUpstreamConnectionRefused(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	assert.Equal(t, err, nil)
+	assert.NoError(t, err)
 
 	addr := ln.Addr().String()
 
 	err = ln.Close()
-	assert.Equal(t, err, nil)
+	assert.NoError(t, err)
 
 	tm := TestMatcher{
-		Route: ContainerRoute{
-			Server: "http://" + addr,
+		RouteGroup: &RouteGroup{
 			Domain: "example.com",
+			Upstreams: []Upstream{{
+				Server: "http://" + addr,
+			}},
+			MaxBodySize:             1,
+			ConcurrentRequestsLimit: 1,
 		},
 		Result: true,
 	}
@@ -194,7 +204,7 @@ func TestReverseProxyUpstreamConnectionRefused(t *testing.T) {
 	defer func() {
 		_ = res.Body.Close()
 	}()
-	assert.Equal(t, err, nil)
+	assert.NoError(t, err)
 	assert.Equal(t, "example.com", tm.Host)
 	assert.Equal(t, http.StatusBadGateway, res.StatusCode)
 }
@@ -207,9 +217,11 @@ func TestReverseProxyPreservesRequestID(t *testing.T) {
 	defer backend.Close()
 
 	tm := TestMatcher{
-		Route: ContainerRoute{
-			Server: backend.URL,
+		RouteGroup: &RouteGroup{
 			Domain: "example.com",
+			Upstreams: []Upstream{{
+				Server: backend.URL,
+			}},
 		},
 		Result: true,
 	}
@@ -228,9 +240,11 @@ func TestReverseProxyPreservesRequestID(t *testing.T) {
 
 func TestReverseProxyHealth(t *testing.T) {
 	tm := TestMatcher{
-		Route: ContainerRoute{
-			Server: "http://%",
+		RouteGroup: &RouteGroup{
 			Domain: "example.com",
+			Upstreams: []Upstream{{
+				Server: "http://%",
+			}},
 		},
 		Result: true,
 	}
@@ -248,7 +262,7 @@ func TestReverseProxyHealth(t *testing.T) {
 
 	body, err := io.ReadAll(res.Body)
 
-	assert.Equal(t, err, nil)
+	assert.NoError(t, err)
 	assert.Equal(t, "ok", string(body))
 	assert.Equal(t, int32(0), tm.calls.Load())
 	assert.Equal(t, http.StatusOK, res.StatusCode)
@@ -264,9 +278,11 @@ func TestReverseProxyRejectsTooLargeRequestBody(t *testing.T) {
 	defer backend.Close()
 
 	tm := TestMatcher{
-		Route: ContainerRoute{
-			Server:      backend.URL,
-			Domain:      "example.com",
+		RouteGroup: &RouteGroup{
+			Domain: "example.com",
+			Upstreams: []Upstream{{
+				Server: backend.URL,
+			}},
 			MaxBodySize: 1,
 		},
 		Result: true,
@@ -291,9 +307,11 @@ func TestReverseProxyRejectsStreamingBodyOverLimit(t *testing.T) {
 	defer backend.Close()
 
 	tm := TestMatcher{
-		Route: ContainerRoute{
-			Server:      backend.URL,
-			Domain:      "example.com",
+		RouteGroup: &RouteGroup{
+			Domain: "example.com",
+			Upstreams: []Upstream{{
+				Server: backend.URL,
+			}},
 			MaxBodySize: 1,
 		},
 		Result: true,

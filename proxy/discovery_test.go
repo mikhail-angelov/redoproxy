@@ -4,11 +4,14 @@ import (
 	"context"
 	"errors"
 	"io"
+	"maps"
 	"net/http"
 	"os"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
 )
 
 type roundTripFunc func(req *http.Request) (*http.Response, error)
@@ -54,39 +57,17 @@ func TestParseContainerResponseFromFixture(t *testing.T) {
 	d := NewDiscovery(10*time.Millisecond, "bridge")
 
 	containers, err := d.parseContainerResponse(strings.NewReader(body))
-	if err != nil {
-		t.Fatalf("parseContainerResponse returned error: %v", err)
-	}
-
-	if len(containers) != 3 {
-		t.Fatalf("expected 3 containers, got %d", len(containers))
-	}
+	assert.NoError(t, err)
+	assert.Equal(t, 3, len(containers))
 
 	nginx := containers[0]
 
-	if nginx.ID != "6f3c99ca4d83811ae1bf1c3e288ac229288028a8b097565cb93eed85ccc4c9b4" {
-		t.Fatalf("unexpected nginx id: %q", nginx.ID)
-	}
-
-	if nginx.Name != "nginx" {
-		t.Fatalf("expected nginx name, got %q", nginx.Name)
-	}
-
-	if nginx.State != "running" {
-		t.Fatalf("expected running state, got %q", nginx.State)
-	}
-
-	if nginx.NetworkName != "bridge" {
-		t.Fatalf("expected bridge network, got %q", nginx.NetworkName)
-	}
-
-	if nginx.IP != "172.17.0.3" {
-		t.Fatalf("expected nginx IP 172.17.0.3, got %q", nginx.IP)
-	}
-
-	if nginx.Port != 8765 {
-		t.Fatalf("expected nginx port 8765 from label, got %d", nginx.Port)
-	}
+	assert.Equal(t, "6f3c99ca4d83811ae1bf1c3e288ac229288028a8b097565cb93eed85ccc4c9b4", nginx.ID)
+	assert.Equal(t, "nginx", nginx.Name)
+	assert.Equal(t, "running", nginx.State)
+	assert.Equal(t, "bridge", nginx.NetworkName)
+	assert.Equal(t, "172.17.0.3", nginx.IP)
+	assert.Equal(t, 8765, nginx.Port)
 }
 
 func TestBuildRouteMapFromFixture(t *testing.T) {
@@ -94,28 +75,16 @@ func TestBuildRouteMapFromFixture(t *testing.T) {
 	d := NewDiscovery(10*time.Millisecond, "bridge")
 
 	containers, err := d.parseContainerResponse(strings.NewReader(body))
-	if err != nil {
-		t.Fatalf("parseContainerResponse returned error: %v", err)
-	}
+	assert.NoError(t, err)
 
 	routes := buildRouteMap(containers)
 
-	if len(routes) != 1 {
-		t.Fatalf("expected 1 route, got %d", len(routes))
-	}
-
+	assert.Equal(t, 1, len(routes))
 	route, ok := routes["example.com"]
-	if !ok {
-		t.Fatal("expected route for example.com")
-	}
 
-	if route.Domain != "example.com" {
-		t.Fatalf("expected domain example.com, got %q", route.Domain)
-	}
-
-	if route.Server != "http://172.17.0.3:8765" {
-		t.Fatalf("expected server http://172.17.0.3:8765, got %q", route.Server)
-	}
+	assert.True(t, ok)
+	assert.Equal(t, "example.com", route.Domain)
+	assert.Equal(t, "http://172.17.0.3:8765", route.Upstreams[0].Server)
 }
 
 func TestBuildRouteMapSkipsContainersOutsideConfiguredNetwork(t *testing.T) {
@@ -123,15 +92,11 @@ func TestBuildRouteMapSkipsContainersOutsideConfiguredNetwork(t *testing.T) {
 	d := NewDiscovery(10*time.Millisecond, "someOtherNetwork")
 
 	containers, err := d.parseContainerResponse(strings.NewReader(body))
-	if err != nil {
-		t.Fatalf("parseContainerResponse returned error: %v", err)
-	}
+	assert.Nil(t, err)
 
 	routes := buildRouteMap(containers)
 
-	if len(routes) != 0 {
-		t.Fatalf("expected 0 routes because nginx is not in someOtherNetwork, got %d", len(routes))
-	}
+	assert.Equal(t, 0, len(routes))
 }
 
 func TestGetContainersFromFixture(t *testing.T) {
@@ -139,147 +104,102 @@ func TestGetContainersFromFixture(t *testing.T) {
 	d := newTestDiscovery(body, http.StatusOK, nil, "bridge")
 
 	containers, err := d.getContainers(context.Background())
-	if err != nil {
-		t.Fatalf("getContainers returned error: %v", err)
-	}
-
-	if len(containers) != 3 {
-		t.Fatalf("expected 3 containers, got %d", len(containers))
-	}
+	assert.Nil(t, err)
+	assert.Equal(t, 3, len(containers))
 }
 
 func TestGetContainersDockerAPIError(t *testing.T) {
 	d := newTestDiscovery("error", http.StatusInternalServerError, nil, "bridge")
 
 	_, err := d.getContainers(context.Background())
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-
-	if !strings.Contains(err.Error(), "docker containers API returned status 500") {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	assert.True(t, err != nil)
+	assert.Contains(t, err.Error(), "docker containers API returned status 500")
 }
 
 func TestGetContainersTransportError(t *testing.T) {
 	d := newTestDiscovery("", http.StatusOK, errors.New("socket failed"), "bridge")
 
 	_, err := d.getContainers(context.Background())
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-
-	if !strings.Contains(err.Error(), "failed to list containers") {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to list containers")
 }
 
 func TestParseContainerResponseInvalidJSON(t *testing.T) {
 	d := NewDiscovery(10*time.Millisecond, "bridge")
 
 	_, err := d.parseContainerResponse(strings.NewReader(`{invalid json`))
-	if err == nil {
-		t.Fatal("expected error for invalid JSON, got nil")
-	}
-
-	if !strings.Contains(err.Error(), "failed to decode container list") {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to decode container list")
 }
 
 func TestRefreshUpdatesRouteMapFromFixture(t *testing.T) {
 	body := readFixture(t, "testData/containers.json")
 	d := newTestDiscovery(body, http.StatusOK, nil, "bridge")
 
-	if err := d.refresh(context.Background()); err != nil {
-		t.Fatalf("refresh returned error: %v", err)
-	}
+	assert.NoError(t, d.refresh(context.Background()))
 
-	route, ok := d.Lookup("example.com")
-	if !ok {
-		t.Fatal("expected route for example.com")
-	}
-
-	if route.Server != "http://172.17.0.3:8765" {
-		t.Fatalf("expected server http://172.17.0.3:8765, got %q", route.Server)
-	}
+	route, ok := d.LookupGroup("example.com")
+	assert.True(t, ok)
+	assert.Equal(t, "example.com", route.Domain)
+	assert.Equal(t, "http://172.17.0.3:8765", route.Upstreams[0].Server)
 }
 
 func TestLookupNormalizesHost(t *testing.T) {
 	d := NewDiscovery(10*time.Millisecond, "bridge")
 
-	d.routeMap = map[string]ContainerRoute{
+	d.routeMap = map[string]*RouteGroup{
 		"example.com": {
-			Domain: "example.com",
-			Server: "http://172.17.0.3:8765",
+			Domain:    "example.com",
+			Upstreams: []Upstream{{Server: "http://172.17.0.3:8765"}},
 		},
 	}
 
-	route, ok := d.Lookup("Example.COM:8080")
-	if !ok {
-		t.Fatal("expected route for Example.COM:8080")
-	}
-
-	if route.Server != "http://172.17.0.3:8765" {
-		t.Fatalf("unexpected route server: %q", route.Server)
-	}
+	route, ok := d.LookupGroup("Example.COM:8080")
+	assert.True(t, ok)
+	assert.Equal(t, "example.com", route.Domain)
+	assert.Equal(t, "http://172.17.0.3:8765", route.Upstreams[0].Server)
 }
 
 func TestSameRouteMap(t *testing.T) {
-	a := map[string]ContainerRoute{
+	a := map[string]*RouteGroup{
 		"example.com": {
-			Domain: "example.com",
-			Server: "http://172.17.0.3:8765",
+			Domain:    "example.com",
+			Upstreams: []Upstream{{Server: "http://172.17.0.3:8765"}},
 		},
 	}
 
-	b := map[string]ContainerRoute{
+	b := map[string]*RouteGroup{
 		"example.com": {
-			Domain: "example.com",
-			Server: "http://172.17.0.3:8765",
+			Domain:    "example.com",
+			Upstreams: []Upstream{{Server: "http://172.17.0.3:8765"}},
 		},
 	}
 
-	c := map[string]ContainerRoute{
+	c := map[string]*RouteGroup{
 		"example.com": {
-			Domain: "example.com",
-			Server: "http://172.17.0.4:8765",
+			Domain:    "example.com",
+			Upstreams: []Upstream{{Server: "http://172.17.0.4:8765"}},
 		},
 	}
 
-	if !sameRouteMap(a, b) {
-		t.Fatal("expected route maps to be equal")
-	}
-
-	if sameRouteMap(a, c) {
-		t.Fatal("expected route maps to be different")
-	}
+	assert.True(t, sameRouteMap(a, b))
+	assert.False(t, sameRouteMap(a, c))
 }
 
 func TestRunRequiresNetworkName(t *testing.T) {
 	d := NewDiscovery(10*time.Millisecond, "")
 
 	err := d.Run(context.Background())
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-
-	if !strings.Contains(err.Error(), "discovery network is not initialized") {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "discovery network is not initialized")
 }
 
 func TestCheckAndBootstrapDockerClientWithExplicitNetwork(t *testing.T) {
 	body := readFixture(t, "testData/containers.json")
 	d := newTestDiscovery(body, http.StatusOK, nil, "bridge")
 
-	if err := d.CheckAndBootstrapDockerClient(); err != nil {
-		t.Fatalf("CheckAndBootstrapDockerClient returned error: %v", err)
-	}
-
-	if d.networkName != "bridge" {
-		t.Fatalf("expected networkName to stay bridge, got %q", d.networkName)
-	}
+	assert.NoError(t, d.CheckAndBootstrapDockerClient())
+	assert.Equal(t, "bridge", d.networkName)
 }
 
 func TestDetectContainerNetworkByIDPrefixFromFixture(t *testing.T) {
@@ -287,21 +207,14 @@ func TestDetectContainerNetworkByIDPrefixFromFixture(t *testing.T) {
 	d := NewDiscovery(10*time.Millisecond, "")
 
 	containers, err := d.parseContainerResponse(strings.NewReader(body))
-	if err != nil {
-		t.Fatalf("parseContainerResponse returned error: %v", err)
-	}
+	assert.NoError(t, err)
 
 	networkName, ok := detectContainerNetworkByIDPrefix(
 		containers,
 		"d5503b81f356718bb01357daab63acb88eaae682bcb638383fadbac66e0bb831",
 	)
-	if !ok {
-		t.Fatal("expected to detect redoproxy network")
-	}
-
-	if networkName != "bridge" {
-		t.Fatalf("expected bridge network, got %q", networkName)
-	}
+	assert.True(t, ok)
+	assert.Equal(t, "bridge", networkName)
 }
 
 func TestDetectContainerNetworkByIDPrefixFailure(t *testing.T) {
@@ -309,14 +222,10 @@ func TestDetectContainerNetworkByIDPrefixFailure(t *testing.T) {
 	d := NewDiscovery(10*time.Millisecond, "")
 
 	containers, err := d.parseContainerResponse(strings.NewReader(body))
-	if err != nil {
-		t.Fatalf("parseContainerResponse returned error: %v", err)
-	}
+	assert.NoError(t, err)
 
 	_, ok := detectContainerNetworkByIDPrefix(containers, "not-existing-id")
-	if ok {
-		t.Fatal("expected detection failure")
-	}
+	assert.False(t, ok)
 }
 
 func TestBuildRouteMapSkipsInvalidContainers(t *testing.T) {
@@ -382,7 +291,91 @@ func TestBuildRouteMapSkipsInvalidContainers(t *testing.T) {
 
 	routes := buildRouteMap(containers)
 
-	if len(routes) != 0 {
-		t.Fatalf("expected 0 routes, got %d", len(routes))
+	assert.Equal(t, 0, len(routes))
+}
+
+func TestBuildRouteMapGroupsSameDomain(t *testing.T) {
+	body := readFixture(t, "testData/groupedContainers.json")
+	d := NewDiscovery(10*time.Millisecond, "bridge")
+
+	containers, err := d.parseContainerResponse(strings.NewReader(body))
+	assert.Nil(t, err)
+	assert.Equal(t, 3, len(containers))
+
+	routes := buildRouteMap(containers)
+	assert.Equal(t, 1, len(routes))
+	assert.Equal(t, 2, len(routes["example.com"].Upstreams))
+
+}
+func TestRouteGroupNextRoundRobin(t *testing.T) {
+	body := readFixture(t, "testData/groupedContainers.json")
+	d := NewDiscovery(10*time.Millisecond, "bridge")
+
+	containers, err := d.parseContainerResponse(strings.NewReader(body))
+	assert.Nil(t, err)
+	routes := buildRouteMap(containers)
+	group := routes["example.com"]
+
+	assert.Equal(t, 0, group.nextIndex)
+	u1, ok := group.Next(nil)
+	assert.True(t, ok)
+	assert.Equal(t, "http://172.17.0.2:8765", u1.Server)
+	u2, ok := group.Next(nil)
+	assert.True(t, ok)
+	assert.Equal(t, "http://172.17.0.3:8765", u2.Server)
+	u3, ok := group.Next(nil)
+	assert.True(t, ok)
+	assert.Equal(t, "http://172.17.0.2:8765", u3.Server)
+}
+func TestLookupGroupDoesNotAdvanceRoundRobin(t *testing.T) {
+	d := NewDiscovery(10*time.Millisecond, "bridge")
+
+	d.routeMap = map[string]*RouteGroup{
+		"example.com": {
+			Domain: "example.com",
+			Upstreams: []Upstream{
+				{Server: "http://172.17.0.2:8765"},
+				{Server: "http://172.17.0.3:8765"},
+			},
+		},
 	}
+
+	group1, ok := d.LookupGroup("example.com")
+	assert.True(t, ok)
+
+	group2, ok := d.LookupGroup("example.com")
+	assert.True(t, ok)
+
+	assert.Same(t, group1, group2)
+	assert.Equal(t, 0, group1.nextIndex)
+
+	u1, ok := group1.Next(nil)
+	assert.True(t, ok)
+	assert.Equal(t, "http://172.17.0.2:8765", u1.Server)
+}
+func TestSameRouteMapDetectsPolicyChange(t *testing.T) {
+	body := readFixture(t, "testData/groupedContainers.json")
+	d := NewDiscovery(10*time.Millisecond, "bridge")
+
+	containers, err := d.parseContainerResponse(strings.NewReader(body))
+	assert.NoError(t, err)
+
+	base := buildRouteMap(containers)
+
+	// buildRouteMap processes containers in deterministic (IP, port) order,
+	// so the lowest-IP container ("weather", 172.17.0.2) is first-seen and
+	// wins on a label conflict; mutate that one to trigger a detectable change.
+	changed := append([]dockerContainer(nil), containers...)
+	changed[1].Labels = copyLabels(changed[1].Labels)
+	changed[1].Labels["redoproxy.max_body_size"] = "100"
+
+	next := buildRouteMap(changed)
+
+	assert.False(t, sameRouteMap(base, next))
+}
+
+func copyLabels(src map[string]string) map[string]string {
+	dst := make(map[string]string, len(src))
+	maps.Copy(dst, src)
+	return dst
 }

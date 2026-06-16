@@ -15,7 +15,7 @@ import (
 )
 
 type RouteMatcher interface {
-	Lookup(host string) (ContainerRoute, bool)
+	LookupGroup(host string) (*RouteGroup, bool)
 }
 
 type HTTPProxy struct {
@@ -111,15 +111,21 @@ func (p *HTTPProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (p *HTTPProxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 
-	route, ok := p.Matcher.Lookup(r.Host)
+	group, ok := p.Matcher.LookupGroup(r.Host)
 	if !ok {
 		http.Error(w, "route not found", http.StatusNotFound)
 		return
 	}
 
-	target, err := url.Parse(route.Server)
+	upstream, ok := group.Next(r)
+	if !ok {
+		http.Error(w, "no upstreams available", http.StatusBadGateway)
+		return
+	}
+
+	target, err := url.Parse(upstream.Server)
 	if err != nil || target.Scheme == "" || target.Host == "" {
-		slog.Error("invalid route target", "request_id", middleware.RequestIDFromContext(r.Context()), "host", r.Host, "target", route.Server, "err", err)
+		slog.Error("invalid route target", "request_id", middleware.RequestIDFromContext(r.Context()), "host", r.Host, "target", upstream.Server, "err", err)
 		http.Error(w, "invalid route target", http.StatusBadGateway)
 		return
 	}
@@ -146,7 +152,7 @@ func (p *HTTPProxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 					"request body is too large",
 					"request_id", middleware.RequestIDFromContext(req.Context()),
 					"host", req.Host,
-					"target", route.Server,
+					"target", upstream.Server,
 					"limit", maxBytesErr.Limit,
 					"err", err,
 				)
@@ -158,7 +164,7 @@ func (p *HTTPProxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 				"upstream request failed",
 				"request_id", middleware.RequestIDFromContext(req.Context()),
 				"host", r.Host,
-				"target", route.Server,
+				"target", upstream.Server,
 				"err", err,
 			)
 			http.Error(w, "bad gateway", http.StatusBadGateway)
@@ -170,7 +176,7 @@ func (p *HTTPProxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (p *HTTPProxy) getMaxRequestBodySize(host string) (int64, error) {
 
-	route, ok := p.Matcher.Lookup(host)
+	route, ok := p.Matcher.LookupGroup(host)
 	if !ok {
 		return 0, fmt.Errorf("invalid host: %s", host)
 	}
@@ -178,7 +184,7 @@ func (p *HTTPProxy) getMaxRequestBodySize(host string) (int64, error) {
 }
 func (p *HTTPProxy) getConcurrentRequestsLimit(host string) (int, error) {
 
-	route, ok := p.Matcher.Lookup(host)
+	route, ok := p.Matcher.LookupGroup(host)
 	if !ok {
 		return 0, fmt.Errorf("invalid host: %s", host)
 	}

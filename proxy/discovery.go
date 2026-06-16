@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -19,15 +20,22 @@ type Discovery struct {
 	client      *http.Client
 	interval    time.Duration
 	networkName string
-	routeMap    map[string]ContainerRoute
+	routeMap    map[string]*RouteGroup
 	lock        sync.RWMutex
 }
 
-type ContainerRoute struct {
+type RouteGroup struct {
 	Domain                  string
-	Server                  string
+	Upstreams               []Upstream
 	MaxBodySize             int64
 	ConcurrentRequestsLimit int
+
+	mu        sync.Mutex
+	nextIndex int
+}
+
+type Upstream struct {
+	Server string
 }
 
 type dockerContainer struct {
@@ -70,7 +78,7 @@ func NewDiscovery(interval time.Duration, networkName string) *Discovery {
 		client:      client,
 		interval:    interval,
 		networkName: networkName,
-		routeMap:    make(map[string]ContainerRoute),
+		routeMap:    make(map[string]*RouteGroup),
 	}
 }
 
@@ -133,18 +141,14 @@ func (d *Discovery) CheckAndBootstrapDockerClient() error {
 	return nil
 }
 
-func (d *Discovery) Lookup(host string) (ContainerRoute, bool) {
-	host = strings.ToLower(strings.TrimSpace(host))
-
-	if h, _, err := net.SplitHostPort(host); err == nil {
-		host = h
-	}
+func (d *Discovery) LookupGroup(host string) (*RouteGroup, bool) {
+	host = normalizeLookupHost(host)
 
 	d.lock.RLock()
 	defer d.lock.RUnlock()
 
-	route, ok := d.routeMap[host]
-	return route, ok
+	group, ok := d.routeMap[host]
+	return group, ok
 }
 
 func (d *Discovery) Run(ctx context.Context) error {
@@ -240,18 +244,34 @@ func (d *Discovery) parseContainerResponse(r io.Reader) ([]dockerContainer, erro
 	return containers, nil
 }
 
-func sameRouteMap(a, b map[string]ContainerRoute) bool {
+func sameRouteGroup(a, b *RouteGroup) bool {
+	if a.MaxBodySize != b.MaxBodySize {
+		return false
+	}
+	if a.ConcurrentRequestsLimit != b.ConcurrentRequestsLimit {
+		return false
+	}
+	if len(a.Upstreams) != len(b.Upstreams) {
+		return false
+	}
+
+	for i := range a.Upstreams {
+		if a.Upstreams[i] != b.Upstreams[i] {
+			return false
+		}
+	}
+
+	return true
+}
+
+func sameRouteMap(a, b map[string]*RouteGroup) bool {
 	if len(a) != len(b) {
 		return false
 	}
 
 	for k, av := range a {
 		bv, ok := b[k]
-		if !ok {
-			return false
-		}
-
-		if av != bv {
+		if !ok || !sameRouteGroup(av, bv) {
 			return false
 		}
 	}
@@ -270,7 +290,18 @@ func (d *Discovery) refresh(ctx context.Context) error {
 	d.lock.Lock()
 	defer d.lock.Unlock()
 
-	if sameRouteMap(d.routeMap, next) {
+	changed := len(next) != len(d.routeMap)
+	for domain, group := range next {
+		if existing, ok := d.routeMap[domain]; ok && sameRouteGroup(existing, group) {
+			// Keep the existing group so its round-robin position
+			// (nextIndex) survives a refresh that didn't change it.
+			next[domain] = existing
+			continue
+		}
+		changed = true
+	}
+
+	if !changed {
 		return nil
 	}
 
@@ -280,10 +311,22 @@ func (d *Discovery) refresh(ctx context.Context) error {
 	return nil
 }
 
-func buildRouteMap(containers []dockerContainer) map[string]ContainerRoute {
-	routes := make(map[string]ContainerRoute)
+func buildRouteMap(containers []dockerContainer) map[string]*RouteGroup {
+	// Sort by IP/port first so that, when several containers share a domain,
+	// which container's labels "win" (and the resulting Upstreams order) is
+	// deterministic instead of depending on Docker API listing order.
+	sorted := make([]dockerContainer, len(containers))
+	copy(sorted, containers)
+	sort.Slice(sorted, func(i, j int) bool {
+		if sorted[i].IP != sorted[j].IP {
+			return sorted[i].IP < sorted[j].IP
+		}
+		return sorted[i].Port < sorted[j].Port
+	})
 
-	for _, c := range containers {
+	routes := make(map[string]*RouteGroup)
+
+	for _, c := range sorted {
 		if c.State != "running" {
 			continue
 		}
@@ -292,9 +335,9 @@ func buildRouteMap(containers []dockerContainer) map[string]ContainerRoute {
 			continue
 		}
 
-		domain := strings.ToLower(strings.TrimSpace(c.Labels["redoproxy.domain"]))
+		domain := normalizeLookupHost(c.Labels["redoproxy.domain"])
 		if domain == "" {
-			slog.Warn("skip container route without domain", "container", c.Name, "domain", domain)
+			slog.Warn("skip container route without domain", "container", c.Name)
 			continue
 		}
 
@@ -308,42 +351,92 @@ func buildRouteMap(containers []dockerContainer) map[string]ContainerRoute {
 			continue
 		}
 
-		maxBodySize := 0
-		if c.Labels["redoproxy.max_body_size"] != "" {
-			value, err := strconv.Atoi(c.Labels["redoproxy.max_body_size"])
-			if err != nil || value < 0 {
-				slog.Warn("invalid max_body_size label", "value", c.Labels["redoproxy.max_body_size"])
-			} else {
-				maxBodySize = value
+		maxBodySize := parseInt64Label(c.Labels, "redoproxy.max_body_size", c.Name)
+		concurrentRequestsLimit := parseIntLabel(c.Labels, "redoproxy.concurrent_requests_limit", c.Name)
+
+		group, ok := routes[domain]
+		if !ok {
+			group = &RouteGroup{
+				Domain:                  domain,
+				MaxBodySize:             maxBodySize,
+				ConcurrentRequestsLimit: concurrentRequestsLimit,
+			}
+			routes[domain] = group
+		} else {
+			if group.MaxBodySize != maxBodySize {
+				slog.Warn(
+					"conflicting max_body_size labels for same domain",
+					"domain", domain,
+					"existing", group.MaxBodySize,
+					"container", c.Name,
+					"value", maxBodySize,
+				)
+			}
+
+			if group.ConcurrentRequestsLimit != concurrentRequestsLimit {
+				slog.Warn(
+					"conflicting concurrent_requests_limit labels for same domain",
+					"domain", domain,
+					"existing", group.ConcurrentRequestsLimit,
+					"container", c.Name,
+					"value", concurrentRequestsLimit,
+				)
 			}
 		}
 
-		concurrentRequestsLimit := 0
-		if c.Labels["redoproxy.max_connections"] != "" {
-			value, err := strconv.Atoi(c.Labels["redoproxy.max_connections"])
-			if err != nil || value < 0 {
-				slog.Warn("invalid max_connections label", "value", c.Labels["redoproxy.max_connections"])
-			} else {
-				concurrentRequestsLimit = value
-			}
-		}
+		group.Upstreams = append(group.Upstreams, Upstream{
+			Server: "http://" + net.JoinHostPort(c.IP, strconv.Itoa(c.Port)),
+		})
 
-		if existing, ok := routes[domain]; ok {
-			slog.Warn(
-				"duplicate redoproxy domain, overriding route",
-				"domain", domain,
-				"old_server", existing.Server,
-				"new_container", c.Name,
-			)
-		}
-
-		routes[domain] = ContainerRoute{
-			Domain:                  domain,
-			Server:                  "http://" + net.JoinHostPort(c.IP, strconv.Itoa(c.Port)),
-			MaxBodySize:             int64(maxBodySize),
-			ConcurrentRequestsLimit: concurrentRequestsLimit,
-		}
+		slog.Info(
+			"server added to route group",
+			"domain", domain,
+			"container", c.Name,
+			"upstreams", len(group.Upstreams),
+		)
 	}
 
 	return routes
+}
+
+func (g *RouteGroup) Next(r *http.Request) (Upstream, bool) {
+	if g == nil {
+		return Upstream{}, false
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if len(g.Upstreams) == 0 {
+		return Upstream{}, false
+	}
+
+	idx := g.nextIndex % len(g.Upstreams)
+	g.nextIndex++
+	return g.Upstreams[idx], true
+}
+
+func normalizeLookupHost(host string) string {
+	host = strings.ToLower(strings.TrimSpace(host))
+
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		return h
+	}
+
+	return host
+}
+
+func parseInt64Label(labels map[string]string, labelTag string, from string) int64 {
+	valueStr, ok := labels[labelTag]
+	if !ok || valueStr == "" {
+		return 0
+	}
+	value, err := strconv.ParseInt(strings.TrimSpace(valueStr), 10, 64)
+	if err != nil || value < 0 {
+		slog.Warn("invalid label", "label", labelTag, "container", from, "value", valueStr)
+		return 0
+	}
+	return value
+}
+
+func parseIntLabel(labels map[string]string, labelTag string, from string) int {
+	return int(parseInt64Label(labels, labelTag, from))
 }
