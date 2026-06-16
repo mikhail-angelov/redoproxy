@@ -353,6 +353,30 @@ func TestLookupGroupDoesNotAdvanceRoundRobin(t *testing.T) {
 	assert.True(t, ok)
 	assert.Equal(t, "http://172.17.0.2:8765", u1.Server)
 }
+func TestRefreshPreservesRoundRobinStateWhenRoutesUnchanged(t *testing.T) {
+	body := readFixture(t, "testData/groupedContainers.json")
+	d := newTestDiscovery(body, http.StatusOK, nil, "bridge")
+
+	assert.NoError(t, d.refresh(context.Background()))
+
+	group, ok := d.LookupGroup("example.com")
+	assert.True(t, ok)
+
+	u1, ok := group.Next(nil)
+	assert.True(t, ok)
+	assert.Equal(t, "http://172.17.0.2:8765", u1.Server)
+
+	assert.NoError(t, d.refresh(context.Background()))
+
+	groupAfter, ok := d.LookupGroup("example.com")
+	assert.True(t, ok)
+	assert.Same(t, group, groupAfter)
+
+	u2, ok := groupAfter.Next(nil)
+	assert.True(t, ok)
+	assert.Equal(t, "http://172.17.0.3:8765", u2.Server)
+}
+
 func TestSameRouteMapDetectsPolicyChange(t *testing.T) {
 	body := readFixture(t, "testData/groupedContainers.json")
 	d := NewDiscovery(10*time.Millisecond, "bridge")
@@ -366,8 +390,13 @@ func TestSameRouteMapDetectsPolicyChange(t *testing.T) {
 	// so the lowest-IP container ("weather", 172.17.0.2) is first-seen and
 	// wins on a label conflict; mutate that one to trigger a detectable change.
 	changed := append([]dockerContainer(nil), containers...)
-	changed[1].Labels = copyLabels(changed[1].Labels)
-	changed[1].Labels["redoproxy.max_body_size"] = "100"
+	for i := range changed {
+		if changed[i].IP == "172.17.0.2" {
+			changed[i].Labels = copyLabels(changed[i].Labels)
+			changed[i].Labels["redoproxy.max_body_size"] = "100"
+			break
+		}
+	}
 
 	next := buildRouteMap(changed)
 

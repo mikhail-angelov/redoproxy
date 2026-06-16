@@ -245,6 +245,9 @@ func (d *Discovery) parseContainerResponse(r io.Reader) ([]dockerContainer, erro
 }
 
 func sameRouteGroup(a, b *RouteGroup) bool {
+	if a == nil || b == nil {
+		return false
+	}
 	if a.MaxBodySize != b.MaxBodySize {
 		return false
 	}

@@ -288,7 +288,7 @@ func TestReverseProxyRejectsTooLargeRequestBody(t *testing.T) {
 		Result: true,
 	}
 	proxy := NewHttpProxy(":0", &tm)
-	req := httptest.NewRequest(http.MethodGet, "http://example.com/upload", strings.NewReader("test me"))
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/upload", strings.NewReader("test me"))
 	rr := httptest.NewRecorder()
 
 	proxy.ServeHTTP(rr, req)
