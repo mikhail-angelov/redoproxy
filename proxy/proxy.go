@@ -22,12 +22,14 @@ type HTTPProxy struct {
 	Matcher RouteMatcher
 	Server  *http.Server
 
-	handler http.Handler
+	handler   http.Handler
+	transport http.RoundTripper
 }
 
 func NewHttpProxy(addr string, matcher RouteMatcher) *HTTPProxy {
 	p := &HTTPProxy{
-		Matcher: matcher,
+		Matcher:   matcher,
+		transport: newUpstreamTransport(),
 	}
 
 	var handler http.Handler = http.HandlerFunc(p.handleHTTP)
@@ -49,6 +51,20 @@ func NewHttpProxy(addr string, matcher RouteMatcher) *HTTPProxy {
 	}
 
 	return p
+}
+
+func newUpstreamTransport() *http.Transport {
+	return &http.Transport{
+		Proxy:                 http.ProxyFromEnvironment,
+		DialContext:           (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          1000,
+		MaxIdleConnsPerHost:   100,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+		ResponseHeaderTimeout: 30 * time.Second,
+	}
 }
 
 func (p *HTTPProxy) Run(ctx context.Context) error {
@@ -131,6 +147,7 @@ func (p *HTTPProxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	rp := &httputil.ReverseProxy{
+		Transport: p.transport,
 		Rewrite: func(preq *httputil.ProxyRequest) {
 			preq.SetURL(target)
 			preq.Out.Host = preq.In.Host
