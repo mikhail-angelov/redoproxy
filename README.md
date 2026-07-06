@@ -1,6 +1,6 @@
 # RedoProxy
 
-A reverse proxy for Docker containers with automatic service discovery and automatic TLS via Let's Encrypt.
+A reverse proxy for Docker containers with automatic service discovery and automatic TLS via Let's Encrypt. Inspired by [reproxy](https://github.com/umputun/reproxy) project.
 
 RedoProxy polls the Docker socket, discovers containers with specific labels, and automatically routes traffic to them. It supports both HTTP and HTTPS modes, with transparent Let's Encrypt certificate provisioning.
 
