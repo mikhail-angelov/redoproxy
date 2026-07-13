@@ -1,8 +1,9 @@
 APP_NAME := redoproxy
 HOST := $(shell grep '^HOST=' .env 2>/dev/null | cut -d '=' -f 2)
-SSH_USER ?= deploy
+SSH_USER ?= root
 REMOTE_DIR ?= /opt/$(APP_NAME)
 IMAGE ?= ghcr.io/mikhail-angelov/$(APP_NAME)
+IMAGE_TAG=latest
 
 .PHONY: check-host
 check-host:
