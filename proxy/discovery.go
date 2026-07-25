@@ -29,6 +29,9 @@ type RouteGroup struct {
 	Upstreams               []Upstream
 	MaxBodySize             int64
 	ConcurrentRequestsLimit int
+	// Timeout bounds a single upstream request for this domain (see
+	// redoproxy.timeout label). Zero means "use the proxy default".
+	Timeout time.Duration
 
 	mu        sync.Mutex
 	nextIndex int
@@ -254,6 +257,9 @@ func sameRouteGroup(a, b *RouteGroup) bool {
 	if a.ConcurrentRequestsLimit != b.ConcurrentRequestsLimit {
 		return false
 	}
+	if a.Timeout != b.Timeout {
+		return false
+	}
 	if len(a.Upstreams) != len(b.Upstreams) {
 		return false
 	}
@@ -356,6 +362,7 @@ func buildRouteMap(containers []dockerContainer) map[string]*RouteGroup {
 
 		maxBodySize := parseInt64Label(c.Labels, "redoproxy.max_body_size", c.Name)
 		concurrentRequestsLimit := parseIntLabel(c.Labels, "redoproxy.concurrent_requests_limit", c.Name)
+		timeout := time.Duration(parseIntLabel(c.Labels, "redoproxy.timeout", c.Name)) * time.Second
 
 		group, ok := routes[domain]
 		if !ok {
@@ -363,6 +370,7 @@ func buildRouteMap(containers []dockerContainer) map[string]*RouteGroup {
 				Domain:                  domain,
 				MaxBodySize:             maxBodySize,
 				ConcurrentRequestsLimit: concurrentRequestsLimit,
+				Timeout:                 timeout,
 			}
 			routes[domain] = group
 		} else {
@@ -383,6 +391,16 @@ func buildRouteMap(containers []dockerContainer) map[string]*RouteGroup {
 					"existing", group.ConcurrentRequestsLimit,
 					"container", c.Name,
 					"value", concurrentRequestsLimit,
+				)
+			}
+
+			if group.Timeout != timeout {
+				slog.Warn(
+					"conflicting timeout labels for same domain",
+					"domain", domain,
+					"existing", group.Timeout,
+					"container", c.Name,
+					"value", timeout,
 				)
 			}
 		}

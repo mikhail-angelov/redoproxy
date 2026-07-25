@@ -408,3 +408,39 @@ func copyLabels(src map[string]string) map[string]string {
 	maps.Copy(dst, src)
 	return dst
 }
+
+func TestBuildRouteMapParsesTimeoutLabel(t *testing.T) {
+	containers := []dockerContainer{
+		{
+			ID:    "with-timeout",
+			Name:  "with-timeout",
+			State: "running",
+			Labels: map[string]string{
+				"redoproxy.enabled": "true",
+				"redoproxy.domain":  "slow.example.com",
+				"redoproxy.port":    "8765",
+				"redoproxy.timeout": "120",
+			},
+			IP:   "172.17.0.20",
+			Port: 8765,
+		},
+		{
+			ID:    "no-timeout",
+			Name:  "no-timeout",
+			State: "running",
+			Labels: map[string]string{
+				"redoproxy.enabled": "true",
+				"redoproxy.domain":  "fast.example.com",
+				"redoproxy.port":    "8765",
+			},
+			IP:   "172.17.0.21",
+			Port: 8765,
+		},
+	}
+
+	routes := buildRouteMap(containers)
+
+	assert.Equal(t, 120*time.Second, routes["slow.example.com"].Timeout)
+	// Unset label → zero, so the proxy applies its default at request time.
+	assert.Equal(t, time.Duration(0), routes["fast.example.com"].Timeout)
+}

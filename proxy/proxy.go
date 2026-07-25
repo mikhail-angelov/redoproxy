@@ -14,6 +14,13 @@ import (
 	"github.com/mikhail-angelov/redoproxy/proxy/middleware"
 )
 
+// defaultUpstreamTimeout bounds a single upstream request when a route does not
+// set its own redoproxy.timeout label. It replaces the former global 30s
+// Server.WriteTimeout / Transport.ResponseHeaderTimeout, which were connection-
+// wide and so could not be raised per domain (a slow upstream would get its
+// connection reset — surfacing as ERR_HTTP2_PROTOCOL_ERROR in the browser).
+const defaultUpstreamTimeout = 30 * time.Second
+
 type RouteMatcher interface {
 	LookupGroup(host string) (*RouteGroup, bool)
 }
@@ -46,8 +53,11 @@ func NewHttpProxy(addr string, matcher RouteMatcher) *HTTPProxy {
 		Handler:           p,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       30 * time.Second,
-		WriteTimeout:      30 * time.Second,
-		IdleTimeout:       60 * time.Second,
+		// No global WriteTimeout: the response-write deadline is set per request
+		// in handleHTTP from the route's timeout, so a domain that needs longer
+		// (e.g. an LLM backend) can opt in via redoproxy.timeout without other
+		// domains losing their bound.
+		IdleTimeout: 60 * time.Second,
 	}
 
 	return p
@@ -63,7 +73,9 @@ func newUpstreamTransport() *http.Transport {
 		IdleConnTimeout:       90 * time.Second,
 		TLSHandshakeTimeout:   10 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
-		ResponseHeaderTimeout: 30 * time.Second,
+		// No ResponseHeaderTimeout: the per-request context deadline set in
+		// handleHTTP (from the route's timeout) bounds the wait for upstream
+		// headers, so this transport can serve routes with different timeouts.
 	}
 }
 
@@ -139,6 +151,22 @@ func (p *HTTPProxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Bound this upstream request by the route's timeout (or the default). The
+	// context deadline aborts the round trip if the upstream is slow to respond;
+	// the matching write deadline caps how long we hold the client connection
+	// open while waiting. Both replace the former global timeouts so a single
+	// slow domain can be granted more time via its redoproxy.timeout label.
+	timeout := group.Timeout
+	if timeout <= 0 {
+		timeout = defaultUpstreamTimeout
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), timeout)
+	defer cancel()
+	r = r.WithContext(ctx)
+	if err := http.NewResponseController(w).SetWriteDeadline(time.Now().Add(timeout)); err != nil {
+		slog.Warn("set write deadline failed", "host", r.Host, "err", err)
+	}
+
 	target, err := url.Parse(upstream.Server)
 	if err != nil || target.Scheme == "" || target.Host == "" {
 		slog.Error("invalid route target", "request_id", middleware.RequestIDFromContext(r.Context()), "host", r.Host, "target", upstream.Server, "err", err)
@@ -174,6 +202,18 @@ func (p *HTTPProxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 					"err", err,
 				)
 				http.Error(w, "request body is too large", http.StatusRequestEntityTooLarge)
+				return
+			}
+
+			if errors.Is(err, context.DeadlineExceeded) {
+				slog.Warn(
+					"upstream request timed out",
+					"request_id", middleware.RequestIDFromContext(req.Context()),
+					"host", r.Host,
+					"target", upstream.Server,
+					"timeout", timeout,
+				)
+				http.Error(w, "gateway timeout", http.StatusGatewayTimeout)
 				return
 			}
 

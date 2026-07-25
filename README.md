@@ -44,6 +44,7 @@ When several containers use the same `redoproxy.domain`, RedoProxy groups them i
 | `redoproxy.port` | yes | Internal container port to proxy traffic to |
 | `redoproxy.max_body_size` | no | Maximum request body size in bytes for this domain. Unset or `0` disables the limit |
 | `redoproxy.concurrent_requests_limit` | no | Maximum number of in-flight requests for this domain. Unset or `0` disables the limit |
+| `redoproxy.timeout` | no | Upstream request timeout in seconds for this domain. Bounds how long the proxy waits for a slow backend before returning `504`. Unset or `0` uses the proxy default (30s) |
 
 Only containers in the same Docker network as RedoProxy are discovered. Currently only a single network is supported.
 

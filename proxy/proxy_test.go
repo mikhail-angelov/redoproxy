@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/mikhail-angelov/redoproxy/proxy/middleware"
 	"github.com/stretchr/testify/assert"
@@ -326,4 +327,63 @@ func TestReverseProxyRejectsStreamingBodyOverLimit(t *testing.T) {
 	proxy.ServeHTTP(rr, req)
 
 	assert.Equal(t, http.StatusRequestEntityTooLarge, rr.Code)
+}
+
+func TestReverseProxyRouteTimeout(t *testing.T) {
+	// Backend that is slower than the route's timeout → the proxy must abort the
+	// upstream request and return 504 rather than hanging or resetting the conn.
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(300 * time.Millisecond)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	tm := TestMatcher{
+		RouteGroup: &RouteGroup{
+			Domain:    "example.com",
+			Upstreams: []Upstream{{Server: backend.URL}},
+			Timeout:   50 * time.Millisecond,
+		},
+		Result: true,
+	}
+	proxy := NewHttpProxy(":0", &tm)
+
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/slow", nil)
+	rr := httptest.NewRecorder()
+
+	start := time.Now()
+	proxy.ServeHTTP(rr, req)
+	elapsed := time.Since(start)
+
+	assert.Equal(t, http.StatusGatewayTimeout, rr.Code)
+	assert.Less(t, elapsed, 250*time.Millisecond, "should give up at the route timeout, not wait for the backend")
+}
+
+func TestReverseProxyRouteTimeoutAllowsSlowUpstream(t *testing.T) {
+	// A backend slower than the former global 30s cap would have been fine here
+	// only because the route grants a longer timeout; assert the happy path still
+	// completes when the backend finishes within the route timeout.
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(80 * time.Millisecond)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer backend.Close()
+
+	tm := TestMatcher{
+		RouteGroup: &RouteGroup{
+			Domain:    "example.com",
+			Upstreams: []Upstream{{Server: backend.URL}},
+			Timeout:   500 * time.Millisecond,
+		},
+		Result: true,
+	}
+	proxy := NewHttpProxy(":0", &tm)
+
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/slow", nil)
+	rr := httptest.NewRecorder()
+	proxy.ServeHTTP(rr, req)
+
+	assert.Equal(t, http.StatusOK, rr.Code)
+	assert.Equal(t, "ok", rr.Body.String())
 }
