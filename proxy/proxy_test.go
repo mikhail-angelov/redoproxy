@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"bufio"
 	"io"
 	"net"
 	"net/http"
@@ -386,4 +387,53 @@ func TestReverseProxyRouteTimeoutAllowsSlowUpstream(t *testing.T) {
 
 	assert.Equal(t, http.StatusOK, rr.Code)
 	assert.Equal(t, "ok", rr.Body.String())
+}
+
+func TestReverseProxyUpgradeOutlivesRouteTimeout(t *testing.T) {
+	// A WebSocket stays open past the route timeout: the timeout bounds requests, not upgraded connections.
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, rw, err := http.NewResponseController(w).Hijack()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		_, _ = rw.WriteString("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: test\r\n\r\n")
+		_ = rw.Flush()
+		line, err := rw.ReadString('\n')
+		if err != nil {
+			return
+		}
+		_, _ = rw.WriteString(line)
+		_ = rw.Flush()
+	}))
+	defer backend.Close()
+
+	tm := TestMatcher{
+		RouteGroup: &RouteGroup{
+			Domain:    "example.com",
+			Upstreams: []Upstream{{Server: backend.URL}},
+			Timeout:   50 * time.Millisecond,
+		},
+		Result: true,
+	}
+	front := httptest.NewServer(NewHttpProxy(":0", &tm))
+	defer front.Close()
+
+	conn, err := net.Dial("tcp", strings.TrimPrefix(front.URL, "http://"))
+	assert.NoError(t, err)
+	defer conn.Close()
+	_, err = conn.Write([]byte("GET /ws HTTP/1.1\r\nHost: example.com\r\nConnection: Upgrade\r\nUpgrade: test\r\n\r\n"))
+	assert.NoError(t, err)
+	r := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(r, nil)
+	assert.NoError(t, err)
+	assert.Equal(t, http.StatusSwitchingProtocols, resp.StatusCode)
+
+	time.Sleep(150 * time.Millisecond)
+	_, err = conn.Write([]byte("ping\n"))
+	assert.NoError(t, err)
+	_ = conn.SetReadDeadline(time.Now().Add(time.Second))
+	line, err := r.ReadString('\n')
+	assert.NoError(t, err)
+	assert.Equal(t, "ping\n", line)
 }

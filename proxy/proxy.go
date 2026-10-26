@@ -156,15 +156,19 @@ func (p *HTTPProxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	// the matching write deadline caps how long we hold the client connection
 	// open while waiting. Both replace the former global timeouts so a single
 	// slow domain can be granted more time via its redoproxy.timeout label.
+	// An upgraded connection (WebSocket) lives as long as its client wants:
+	// ReverseProxy closes it when the request context ends, so it gets no deadline.
 	timeout := group.Timeout
 	if timeout <= 0 {
 		timeout = defaultUpstreamTimeout
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), timeout)
-	defer cancel()
-	r = r.WithContext(ctx)
-	if err := http.NewResponseController(w).SetWriteDeadline(time.Now().Add(timeout)); err != nil {
-		slog.Warn("set write deadline failed", "host", r.Host, "err", err)
+	if r.Header.Get("Upgrade") == "" {
+		ctx, cancel := context.WithTimeout(r.Context(), timeout)
+		defer cancel()
+		r = r.WithContext(ctx)
+		if err := http.NewResponseController(w).SetWriteDeadline(time.Now().Add(timeout)); err != nil {
+			slog.Warn("set write deadline failed", "host", r.Host, "err", err)
+		}
 	}
 
 	target, err := url.Parse(upstream.Server)
