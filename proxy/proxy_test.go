@@ -396,7 +396,9 @@ func TestReverseProxyUpgradeOutlivesRouteTimeout(t *testing.T) {
 		if err != nil {
 			return
 		}
-		defer conn.Close()
+		defer func() {
+			_ = conn.Close()
+		}()
 		_, _ = rw.WriteString("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: test\r\n\r\n")
 		_ = rw.Flush()
 		line, err := rw.ReadString('\n')
@@ -421,7 +423,9 @@ func TestReverseProxyUpgradeOutlivesRouteTimeout(t *testing.T) {
 
 	conn, err := net.Dial("tcp", strings.TrimPrefix(front.URL, "http://"))
 	assert.NoError(t, err)
-	defer conn.Close()
+	defer func() {
+		_ = conn.Close()
+	}()
 	_, err = conn.Write([]byte("GET /ws HTTP/1.1\r\nHost: example.com\r\nConnection: Upgrade\r\nUpgrade: test\r\n\r\n"))
 	assert.NoError(t, err)
 	r := bufio.NewReader(conn)
